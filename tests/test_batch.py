@@ -136,6 +136,77 @@ def test_inconsistent_levels_between_atmos_variables() -> None:
         )
 
 
+def _metadata(n_lat: int = 17, n_lon: int = 32, n_times: int = 1, n_levels: int = 4) -> Metadata:
+    return Metadata(
+        lat=torch.linspace(90, -90, n_lat),
+        lon=torch.linspace(0, 360, n_lon + 1)[:-1],
+        time=tuple(datetime(2020, 6, 1, 12, 0) for _ in range(n_times)),
+        atmos_levels=_LEVELS[:n_levels],
+    )
+
+
+@pytest.mark.parametrize("n_lat, n_lon", [(9, 32), (17, 16), (18, 32), (17, 33)])
+def test_mismatching_lat_lon_and_spatial_shape(n_lat: int, n_lon: int) -> None:
+    # The encoder only asserts this, which carries no message and is stripped under `python -O`.
+    with pytest.raises(ValueError, match="describe a grid of shape"):
+        Batch(
+            surf_vars={"2t": torch.randn(1, 2, 17, 32)},
+            static_vars={"lsm": torch.randn(17, 32)},
+            atmos_vars={"z": torch.randn(1, 2, 4, 17, 32)},
+            metadata=_metadata(n_lat=n_lat, n_lon=n_lon),
+        )
+
+
+def test_matrix_lat_lon_is_accepted() -> None:
+    metadata = _metadata()
+    metadata.lat = metadata.lat[:, None].expand(17, 32)
+    metadata.lon = metadata.lon[None, :].expand(17, 32)
+    batch = Batch(
+        surf_vars={"2t": torch.randn(1, 2, 17, 32)},
+        static_vars={"lsm": torch.randn(17, 32)},
+        atmos_vars={"z": torch.randn(1, 2, 4, 17, 32)},
+        metadata=metadata,
+    )
+    assert batch.spatial_shape == (17, 32)
+
+
+def test_mismatching_matrix_lat_lon() -> None:
+    metadata = _metadata(n_lat=18, n_lon=32)
+    metadata.lat = metadata.lat[:, None].expand(18, 32)
+    metadata.lon = torch.linspace(0, 360, 33)[:-1][None, :].expand(18, 32)
+    with pytest.raises(ValueError, match="latitude and longitude matrices"):
+        Batch(
+            surf_vars={"2t": torch.randn(1, 2, 17, 32)},
+            static_vars={"lsm": torch.randn(17, 32)},
+            atmos_vars={"z": torch.randn(1, 2, 4, 17, 32)},
+            metadata=metadata,
+        )
+
+
+def test_inconsistent_spatial_shape_between_variables() -> None:
+    batch = _batch(1, 1)
+    with pytest.raises(ValueError, match="same spatial shape"):
+        dataclasses.replace(batch, static_vars={"lsm": torch.randn(9, 32)})
+
+
+def test_inconsistent_history_between_variables() -> None:
+    batch = _batch(1, 1)
+    with pytest.raises(ValueError, match="same history size"):
+        dataclasses.replace(batch, atmos_vars={"z": torch.randn(1, 3, 4, 17, 32)})
+
+
+def test_empty_variables_are_allowed() -> None:
+    # Running without atmospheric variables is something the maintainer has suggested trying in
+    # microsoft/aurora#176, so an empty dictionary must not blow up the validation.
+    batch = Batch(
+        surf_vars={"2t": torch.randn(1, 2, 17, 32)},
+        static_vars={"lsm": torch.randn(17, 32)},
+        atmos_vars={},
+        metadata=_metadata(n_levels=0),
+    )
+    assert batch.atmos_vars == {}
+
+
 def test_derived_batches_stay_valid(test_input_output: tuple[Batch, SavedBatch]) -> None:
     # The operations that construct new batches must not trip the validation.
     batch, _ = test_input_output

@@ -87,16 +87,19 @@ class Batch:
     metadata: Metadata
 
     def __post_init__(self):
+        surf = tuple(self.surf_vars.values())
+        static = tuple(self.static_vars.values())
+        atmos = tuple(self.atmos_vars.values())
+
         # The encoder adds the absolute time embedding as `(B, L, D) + (B, 1, D)` and the
         # pressure encoding as `(B, C, L, D) + (1, len(atmos_levels), 1, D)`. In both cases, a
         # length that disagrees with the data silently broadcasts rather than failing: the batch
         # or level dimension is inflated to the length of the metadata, so the model happily
         # returns predictions of the wrong shape. Check both up front instead.
-        batch_size = _consistent_size(
-            (*self.surf_vars.values(), *self.atmos_vars.values()),
-            dim=0,
-            what="batch size",
-            of_what="surface-level and atmospheric variables",
+        batch_size = _consistent(
+            _sizes(surf + atmos, 0),
+            "batch size",
+            "surface-level and atmospheric variables",
         )
         if batch_size is not None and len(self.metadata.time) != batch_size:
             raise ValueError(
@@ -107,17 +110,56 @@ class Batch:
 
         # The atmospheric variables are `(b, t, c, h, w)`, but the decoder briefly constructs a
         # batch without the history dimension, so count the level dimension from the end.
-        level_size = _consistent_size(
-            self.atmos_vars.values(),
-            dim=-3,
-            what="number of pressure levels",
-            of_what="atmospheric variables",
+        level_size = _consistent(
+            _sizes(atmos, -3),
+            "number of pressure levels",
+            "atmospheric variables",
         )
         if level_size is not None and len(self.metadata.atmos_levels) != level_size:
             raise ValueError(
                 f"The number of pressure levels in the metadata "
                 f"({len(self.metadata.atmos_levels)}) must equal the number of pressure levels "
                 f"of the atmospheric variables ({level_size})."
+            )
+
+        # Every variable describes the same grid. The static variables are `(h, w)` at the public
+        # API but are expanded to `(b, t, h, w)` inside the model, so compare the last two
+        # dimensions rather than the full shape.
+        spatial_shape = _consistent(
+            (tuple(v.shape[-2:]) for v in surf + static + atmos if v.dim() >= 2),
+            "spatial shape",
+            "surface-level, static and atmospheric variables",
+        )
+
+        # The history dimension is only present on fully shaped variables. The decoder constructs
+        # a batch without it, so check it only where it exists.
+        _consistent(
+            [v.shape[1] for v in surf if v.dim() == 4]
+            + [v.shape[1] for v in atmos if v.dim() == 5],
+            "history size",
+            "surface-level and atmospheric variables",
+        )
+
+        if spatial_shape is not None:
+            self._check_lat_lon(*spatial_shape)
+
+    def _check_lat_lon(self, h: int, w: int) -> None:
+        """Check that the latitudes and longitudes describe an `h` by `w` grid."""
+        lat, lon = self.metadata.lat, self.metadata.lon
+
+        # `Metadata.__post_init__` has already checked that the latitudes and longitudes are
+        # either both vectors or both matrices.
+        if lat.dim() == 1:
+            if lat.shape[0] != h or lon.shape[0] != w:
+                raise ValueError(
+                    f"The latitudes and longitudes describe a grid of shape "
+                    f"{(lat.shape[0], lon.shape[0])}, but the variables have spatial shape "
+                    f"{(h, w)}."
+                )
+        elif tuple(lat.shape) != (h, w) or tuple(lon.shape) != (h, w):
+            raise ValueError(
+                f"The latitude and longitude matrices have shapes {tuple(lat.shape)} and "
+                f"{tuple(lon.shape)}, but the variables have spatial shape {(h, w)}."
             )
 
     @property
@@ -345,29 +387,33 @@ class Batch:
         )
 
 
-def _consistent_size(
-    tensors: Iterable[torch.Tensor],
-    dim: int,
-    what: str,
-    of_what: str,
-) -> int | None:
-    """Get the size of dimension `dim` of `tensors`, checking that they all agree.
+def _sizes(tensors: Iterable[torch.Tensor], dim: int) -> list:
+    """Get the size of dimension `dim` of every tensor in `tensors`.
 
-    Args:
-        tensors (iterable of :class:`torch.Tensor`): Tensors to check.
-        dim (int): Dimension to take the size of. May be negative, in which case it counts from
-            the end. Tensors with too few dimensions are skipped.
-        what (str): Description of the size, used in the error message.
-        of_what (str): Description of `tensors`, used in the error message.
-
-    Returns:
-        int or None: The common size, or `None` if no tensor has dimension `dim`.
+    Tensors with too few dimensions are skipped. `dim` may be negative, in which case it counts
+    from the end.
     """
     min_dim = dim + 1 if dim >= 0 else -dim
-    sizes = {v.shape[dim] for v in tensors if v.dim() >= min_dim}
-    if len(sizes) > 1:
-        raise ValueError(f"The {of_what} must all have the same {what}, but found {sorted(sizes)}.")
-    return sizes.pop() if sizes else None
+    return [v.shape[dim] for v in tensors if v.dim() >= min_dim]
+
+
+def _consistent(values: Iterable, what: str, of_what: str) -> object | None:
+    """Check that `values` are all equal.
+
+    Args:
+        values (iterable): Values to compare.
+        what (str): Description of the value, used in the error message.
+        of_what (str): Description of where the values came from, used in the error message.
+
+    Returns:
+        object or None: The common value, or `None` if `values` is empty.
+    """
+    unique = set(values)
+    if len(unique) > 1:
+        raise ValueError(
+            f"The {of_what} must all have the same {what}, but found {sorted(unique)}."
+        )
+    return unique.pop() if unique else None
 
 
 def _np(x: torch.Tensor) -> np.ndarray:
