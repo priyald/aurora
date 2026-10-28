@@ -118,19 +118,19 @@ class Batch:
         """Check that the latitudes and longitudes describe an `h` by `w` grid."""
         lat, lon = self.metadata.lat, self.metadata.lon
 
-        # :meth:`Metadata.__post_init__` has already checked that the latitudes and longitudes are
-        # either both vectors or both matrices.
+        # `Metadata.__post_init__` has already checked that the latitudes and longitudes are either
+        # both vectors or both matrices.
         if lat.dim() == 1:
             if lat.shape[0] != h or lon.shape[0] != w:
                 raise ValueError(
                     f"The latitudes and longitudes describe a grid of shape "
-                    f"{(lat.shape[0], lon.shape[0])}, but the variables have spatial shape "
-                    f"{(h, w)}."
+                    f"`{(lat.shape[0], lon.shape[0])}`, but the variables have spatial shape "
+                    f"`{(h, w)}`."
                 )
         elif tuple(lat.shape) != (h, w) or tuple(lon.shape) != (h, w):
             raise ValueError(
-                f"The latitude and longitude matrices have shapes {tuple(lat.shape)} and "
-                f"{tuple(lon.shape)}, but the variables have spatial shape {(h, w)}."
+                f"The latitude and longitude matrices have shapes `{tuple(lat.shape)}` and "
+                f"`{tuple(lon.shape)}`, but the variables have spatial shape `{(h, w)}`."
             )
 
     @property
