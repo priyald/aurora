@@ -126,12 +126,12 @@ def test_mismatching_matrix_lat_lon() -> None:
 
 
 def test_inconsistent_spatial_shape_between_variables() -> None:
-    with pytest.raises(ValueError, match="same spatial shape"):
+    with pytest.raises(AssertionError, match="same spatial shape"):
         dataclasses.replace(_batch(), static_vars={"lsm": torch.randn(9, 32)})
 
 
 def test_inconsistent_history_between_variables() -> None:
-    with pytest.raises(ValueError, match="same history size"):
+    with pytest.raises(AssertionError, match="same history size"):
         dataclasses.replace(_batch(), atmos_vars={"z": torch.randn(1, 3, 4, 17, 32)})
 
 

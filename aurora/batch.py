@@ -88,7 +88,7 @@ class Batch:
 
     def __post_init__(self):
         b = next(iter(self.surf_vars.values())).shape[0]  # First dim. of (b, t, h, w)
-        c = next(iter(self.atmos_vars.values())).shape[-3]  # Pressure-level dim. of (b, t, c, h, w)
+        c = next(iter(self.atmos_vars.values())).shape[2]  # Pressure-level dim. of (b, t, c, h, w)
 
         if len(self.metadata.time) != b:
             raise ValueError(
@@ -101,31 +101,18 @@ class Batch:
                 f"atmospheric variables have {c} pressure levels. These must be equal."
             )
 
-        surf = tuple(self.surf_vars.values())
-        static = tuple(self.static_vars.values())
-        atmos = tuple(self.atmos_vars.values())
+        all_vars = [*self.surf_vars.values(), *self.static_vars.values(), *self.atmos_vars.values()]
 
-        # Every variable must describe the same grid. Compare the last two dimensions rather than
-        # the full shape: the static variables are `(h, w)` here but are expanded to `(b, t, h, w)`
-        # inside the model, and the decoder constructs a batch before the history dimension is
-        # inserted.
-        spatial_shape = _consistent(
-            (tuple(v.shape[-2:]) for v in surf + static + atmos if v.dim() >= 2),
-            "spatial shape",
-            "surface-level, static and atmospheric variables",
-        )
-
-        # The history dimension is only present on fully shaped variables, so check it only where
-        # it exists.
-        _consistent(
-            [v.shape[1] for v in surf if v.dim() == 4]
-            + [v.shape[1] for v in atmos if v.dim() == 5],
+        # The model expands the static variables to `(b, t, h, w)`, so compare only the last two
+        # dimensions.
+        _assert_all_equal((tuple(v.shape[-2:]) for v in all_vars), "spatial shape", "variables")
+        _assert_all_equal(
+            (v.shape[1] for v in [*self.surf_vars.values(), *self.atmos_vars.values()]),
             "history size",
             "surface-level and atmospheric variables",
         )
 
-        if spatial_shape is not None:
-            self._check_lat_lon(*spatial_shape)
+        self._check_lat_lon(*self.spatial_shape)
 
     def _check_lat_lon(self, h: int, w: int) -> None:
         """Check that the latitudes and longitudes describe an `h` by `w` grid."""
@@ -422,23 +409,13 @@ def split_batch(batch: Batch, n: int) -> list[Batch]:
     ]
 
 
-def _consistent(values: Iterable, what: str, of_what: str) -> object | None:
-    """Check that `values` are all equal.
-
-    Args:
-        values (iterable): Values to compare.
-        what (str): Description of the values, used in the error message.
-        of_what (str): Description of where the values came from, used in the error message.
-
-    Returns:
-        object or None: The common value, or `None` if `values` is empty.
-    """
+def _assert_all_equal(values: Iterable, what: str, of_what: str) -> None:
+    """Assert that all `values` are equal."""
     unique = set(values)
     if len(unique) > 1:
-        raise ValueError(
-            f"The {of_what} must all have the same {what}, but found {sorted(unique)}."
+        raise AssertionError(
+            f"The {of_what} must all have the same {what}, but found `{sorted(unique)}`."
         )
-    return unique.pop() if unique else None
 
 
 def _np(x: torch.Tensor) -> np.ndarray:
